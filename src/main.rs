@@ -8,6 +8,7 @@ use log4rs::config::{Appender, Root};
 use log4rs::append::file::FileAppender;
 use log4rs::append::console::{ConsoleAppender, Target};
 use log4rs::encode::pattern::PatternEncoder;
+use log4rs::filter::threshold::ThresholdFilter;
 
 use clap::Parser;
 use walkdir::WalkDir;
@@ -23,6 +24,9 @@ struct Args {
     #[clap(long)]
     intermediate_dir: Option<PathBuf>,
 
+    #[clap(short = 'd', long)]
+    dry_run: bool,
+
     #[clap(long)]
     transcode_video: bool
 }
@@ -34,6 +38,7 @@ fn main() {
     let output_path = args.output_dir;
     let intermediate_path: Option<PathBuf> = args.intermediate_dir;
 
+    let dry_run = args.dry_run;
     let with_video_transcode = args.transcode_video;
 
     configure_log();
@@ -61,6 +66,14 @@ fn main() {
                     let subs_to_keep = analyze_sub_tracks(&mkv);
                     let audio_to_keep = analyze_audio_tracks(&mkv);
                     let attachments_to_keep = analyze_attachments(&mkv);
+
+                    if dry_run {
+                        trace!("------");
+                        info!("Dry run was requested, moving on...");
+                        println!();
+
+                        continue;
+                    }
 
                     let file_buf = std::fs::read(entry.path()).unwrap_or_default();
 
@@ -206,6 +219,7 @@ fn main() {
                         },
                     }
 
+                    trace!("------");
                     println!();
                 }
             }
@@ -249,7 +263,7 @@ fn configure_log() {
 
     let log_config = Config::builder()
         .appenders([
-            Appender::builder().build("console", Box::new(stdout_log)),
+            Appender::builder().filter(Box::new(ThresholdFilter::new(LevelFilter::Info))).build("console", Box::new(stdout_log)),
             Appender::builder().build("logfile", Box::new(logfile))
         ])
         .build(

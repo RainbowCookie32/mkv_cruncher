@@ -1,2 +1,5 @@
 /.vscode
 /target
+
+*.log
+*.old
