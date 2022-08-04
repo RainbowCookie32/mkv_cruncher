@@ -11,24 +11,50 @@ use log4rs::encode::pattern::PatternEncoder;
 use log4rs::filter::threshold::ThresholdFilter;
 
 use clap::Parser;
+use subprocess::Exec;
 use walkdir::WalkDir;
+use serde::Deserialize;
+use bytesize::ByteSize;
 use matroska::{Matroska, Track, Language, Attachment, Settings};
 
 #[derive(Parser, Debug)]
 #[clap(author, about)]
 struct Args {
-    #[clap(short = 'i', long)]
+    #[clap(
+        short = 'i',
+        long,
+        help="The directory with MKV files to process."
+    )]
     input_dir: PathBuf,
-    #[clap(short = 'o', long)]
+    #[clap(
+        short = 'o',
+        long,
+        help="The directory to save processed MKV files to."
+    )]
     output_dir: PathBuf,
-    #[clap(long)]
+    #[clap(
+        long,
+        help="A directory for ffmpeg to write the output files to, which are then moved by the cruncher to output_dir."
+    )]
     intermediate_dir: Option<PathBuf>,
 
-    #[clap(short = 'd', long)]
+    #[clap(
+        short = 'd',
+        long,
+        help="Analyze the MKV files on the input directory, but skip processing them."
+    )]
     dry_run: bool,
 
-    #[clap(long)]
-    transcode_video: bool
+    #[clap(
+        long,
+        help="Never transcode the video stream of the input files."
+    )]
+    force_never_transcode: bool,
+    #[clap(
+        long,
+        help="Always transcode the video stream of the input files."
+    )]
+    force_always_transcode: bool
 }
 
 fn main() {
@@ -39,7 +65,9 @@ fn main() {
     let intermediate_path: Option<PathBuf> = args.intermediate_dir;
 
     let dry_run = args.dry_run;
-    let with_video_transcode = args.transcode_video;
+
+    let never_transcode_video = args.force_never_transcode;
+    let always_transcode_video = args.force_always_transcode;
 
     configure_log();
     prepare_paths(&input_path, &output_path, &intermediate_path);
@@ -63,13 +91,28 @@ fn main() {
                 info!("Currently processing: {file_name}");
 
                 if let Ok(mkv) = Matroska::open(file) {
+                    let with_video_transcode = {
+                        if always_transcode_video {
+                            info!("  Video track will be transcoded.");
+                            true
+                        }
+                        else if never_transcode_video || !analyze_video(&mkv, entry.path()) {
+                            info!("  Video track will be copied.");
+                            false
+                        }
+                        else {
+                            info!("  Video track will be transcoded.");
+                            true
+                        }
+                    };
+
                     let subs_to_keep = analyze_sub_tracks(&mkv);
                     let audio_to_keep = analyze_audio_tracks(&mkv);
                     let attachments_to_keep = analyze_attachments(&mkv);
 
                     if dry_run {
-                        trace!("------");
                         info!("Dry run was requested, moving on...");
+                        trace!("------");
                         println!();
 
                         continue;
@@ -229,12 +272,14 @@ fn main() {
     if !clean_exit {
         error!("Exiting because of an error...");
 
-        if let Some(intermediate) = intermediate_path {
-            for entry in WalkDir::new(intermediate).max_depth(1).into_iter().filter_map(| f | f.ok()) {
-                let file_name = entry.file_name().to_string_lossy().to_string();
-
-                if entry.file_type().is_file() && file_name.to_lowercase().contains("mkv") {
-                    fs::remove_file(entry.path()).expect("Failed to remove intermediate file");
+        if !dry_run {
+            if let Some(intermediate) = intermediate_path {
+                for entry in WalkDir::new(intermediate).max_depth(1).into_iter().filter_map(| f | f.ok()) {
+                    let file_name = entry.file_name().to_string_lossy().to_string();
+    
+                    if entry.file_type().is_file() && file_name.to_lowercase().contains("mkv") {
+                        fs::remove_file(entry.path()).expect("Failed to remove intermediate file");
+                    }
                 }
             }
         }
@@ -291,6 +336,49 @@ fn prepare_paths(input: &Path, output: &Path, intermediate: &Option<PathBuf>) {
         if !intermediate.exists() {
             fs::create_dir_all(intermediate).expect("Intermediate directory didn't exist, and couldn't be created!");
         }
+    }
+}
+
+fn analyze_video(mkv: &Matroska, path: &Path) -> bool {
+    let track = mkv.video_tracks().collect::<Vec<&Track>>()[0];
+    
+    let ffprobe_process = Exec::cmd("ffprobe")
+        .args(&[
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format"
+        ])
+        .arg(path)
+    ;
+
+    let data = ffprobe_process
+        .capture()
+        .expect("Error running ffprobe")
+    ;
+
+    let ffprobe_result = serde_json::from_slice::<FfprobeResult>(&data.stdout)
+        .expect("Failed to process ffprobe's result")
+    ;
+
+    let format = ffprobe_result.format;
+
+    let mkv_size = ByteSize::b(format.size.parse::<u64>().expect("Failed to parse file size"));
+    let mkv_duration = (format.duration.parse::<f32>().expect("Failed to parse file duration").floor() as u64) / 60;
+
+    // A lot of guesstimation that'll probably need further tweaking.
+    // Non-HEVC I'll likely always want to transcode.
+    if track.codec_id != HEVC_CODEC {
+        true
+    }
+    // This is aimed at movies mostly.
+    else if mkv_duration >= 50 {
+        // Not quite convinced at size threshold here.
+        mkv_size > ByteSize::gib(5)
+    }
+    // Show episodes should fall in here.
+    else {
+        // Not quite convinced here either.
+        mkv_size > ByteSize::mib(600)
     }
 }
 
@@ -477,7 +565,19 @@ fn analyze_attachments(mkv: &Matroska) -> Vec<(usize, &Attachment)> {
     preserved_attachments
 }
 
+#[derive(Deserialize)]
+struct FfprobeResult {
+    format: FfprobeFormat
+}
+
+#[derive(Deserialize)]
+struct FfprobeFormat {
+    duration: String,
+    size: String
+}
+
 const ASS_CODEC: &str = "S_TEXT/ASS";
+const HEVC_CODEC: &str = "V_MPEGH/ISO/HEVC";
 
 const OK_SUB_LANGS: [&str; 5] = [
     "eng",
