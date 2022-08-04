@@ -493,7 +493,7 @@ fn analyze_audio_tracks(mkv: &Matroska) -> Vec<(usize, &Track)> {
         .filter(| (_, t) | {
             if let Some(track_name) = t.name.as_ref() {
                 let track_name = track_name.to_lowercase();
-                track_name.contains("eng") | track_name.contains("english")
+                !track_name.contains("eng") | !track_name.contains("english")
             }
             else {
                 true
