@@ -1,6 +1,7 @@
 mod ffprobe;
 
 use std::fs;
+use std::time::Instant;
 use std::path::{Path, PathBuf};
 
 use log::*;
@@ -75,7 +76,7 @@ fn main() {
     info!("Reading directory {}", input_path.as_os_str().to_string_lossy());
 
     let dir_walker = WalkDir::new(input_path)
-        //.max_depth(1)
+        .max_depth(1)
         .into_iter()
         .filter_map(| d | d.ok())
     ;
@@ -197,6 +198,8 @@ fn main() {
                 out_path.push(&file_name);
                 ffmpeg_process = ffmpeg_process.arg(out_path.as_os_str());
 
+                let instant = Instant::now();
+
                 match ffmpeg_process.capture() {
                     Ok(r) => {
                         if !r.exit_status.success() {
@@ -207,6 +210,7 @@ fn main() {
                         }
 
                         if let Some(intermediate) = intermediate_path.as_ref() {
+                            let time_to_process = instant.elapsed();
                             let mut output_path = output_path.clone();
                             let mut result_path = intermediate.clone();
 
@@ -214,6 +218,7 @@ fn main() {
                             result_path.push(entry.file_name());
 
                             info!("ffmpeg exited successfully, copying result to output dir...");
+                            info!("Time to process: {}m{}s", time_to_process.as_secs() / 60, time_to_process.as_secs() % 60);
 
                             let result_size = result_path
                                 .metadata()
