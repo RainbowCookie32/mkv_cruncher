@@ -1,8 +1,8 @@
+mod args;
 mod ffprobe;
 
 use std::fs;
 use std::time::Instant;
-use std::path::{Path, PathBuf};
 
 use log::*;
 use flexi_logger::{Logger, LoggerHandle};
@@ -12,70 +12,29 @@ use walkdir::WalkDir;
 use bytesize::ByteSize;
 use ffprobe::mkv::{MkvFile, Stream};
 
-#[derive(Parser, Debug)]
-#[clap(author, about)]
-struct Args {
-    #[clap(
-        short = 'i',
-        long,
-        help="The directory with MKV files to process."
-    )]
-    input_dir: PathBuf,
-    #[clap(
-        short = 'o',
-        long,
-        help="The directory to save processed MKV files to."
-    )]
-    output_dir: PathBuf,
-    #[clap(
-        long,
-        help="A directory for ffmpeg to write the output files to, which are then moved by the cruncher to output_dir."
-    )]
-    intermediate_dir: Option<PathBuf>,
-
-    #[clap(
-        short = 'd',
-        long,
-        help="Analyze the MKV files on the input directory, but skip processing them."
-    )]
-    dry_run: bool,
-
-    #[clap(
-        long,
-        help="Never transcode the video stream of the input files."
-    )]
-    force_never_transcode: bool,
-    #[clap(
-        long,
-        help="Always transcode the video stream of the input files."
-    )]
-    force_always_transcode: bool
-}
-
 fn main() {
-    let args = Args::parse();
-
-    let input_path = args.input_dir;
-    let output_path = args.output_dir;
-    let intermediate_path: Option<PathBuf> = args.intermediate_dir;
-
-    let dry_run = args.dry_run;
-
-    let never_transcode_video = args.force_never_transcode;
-    let always_transcode_video = args.force_always_transcode;
-
+    let args = args::AppArgs::parse();
     let _logger_handle = configure_log();
-    
-    prepare_paths(&input_path, &output_path, &intermediate_path);
+
+    prepare_paths(&args);
 
     println!();
-    info!("Reading directory {}", input_path.as_os_str().to_string_lossy());
+    info!("Reading directory {}", args.input_dir().as_os_str().to_string_lossy());
 
-    let dir_walker = WalkDir::new(input_path)
+    let dir_walker = WalkDir::new(args.input_dir())
         .max_depth(1)
         .into_iter()
         .filter_map(| d | d.ok())
     ;
+
+    let base_output_dir = {
+        if let Some(intermediate_path) = args.intermediate_dir() {
+            intermediate_path.clone()
+        }
+        else {
+            args.output_dir().clone()
+        }
+    };
 
     let mut clean_exit = true;
 
@@ -87,17 +46,13 @@ fn main() {
 
             if let Ok(mkv) = ffprobe::probe_file(entry.path()) {
                 let with_video_transcode = {
-                    if always_transcode_video {
+                    if args.can_transcode_video() && !analyze_video(&mkv) {
                         info!("  Video track will be transcoded.");
                         true
-                    }
-                    else if never_transcode_video || !analyze_video(&mkv) {
-                        info!("  Video track will be copied.");
-                        false
                     }
                     else {
-                        info!("  Video track will be transcoded.");
-                        true
+                        info!("  Video track will be copied.");
+                        false
                     }
                 };
 
@@ -105,7 +60,7 @@ fn main() {
                 let audio_to_keep = analyze_audio_tracks(&mkv);
                 let attachments_to_keep = analyze_attachments(&mkv);
 
-                if dry_run {
+                if args.dry_run() {
                     info!("Dry run was requested, moving on...");
                     trace!("------");
                     println!();
@@ -113,96 +68,78 @@ fn main() {
                     continue;
                 }
 
-                let file_buf = std::fs::read(entry.path()).unwrap_or_default();
-
                 let mut ffmpeg_process = subprocess::Exec::cmd("ffmpeg")
                     // Feed the file using stdin.
-                    .stdin(file_buf)
-                    // Make ffmpeg less noisy.
-                    .arg("-hide_banner")
-                    .arg("-loglevel").arg("error")
-                    .arg("-stats")
-                    .arg("-y")
-                    // Input file.
-                    .arg("-i").arg("pipe:0")
-                    // Grab only the first video stream. Skips cover pictures and horrible fuck-ups.
-                    .arg("-map").arg("0:v:0")
+                    .stdin(fs::read(entry.path()).unwrap_or_default())
+                    .args(&[
+                        // Make ffmpeg less noisy.
+                        "-hide_banner", "-loglevel", "error",
+                        // Preserve progress stats and overwrite existing files.
+                        "-stats", "-y",
+                        // Read the file from stdin.
+                        "-i", "pipe:0",
+                        // // Grab only the first video stream. Skips cover pictures and horrible fuck-ups.
+                        "-map", "0:v:0"
+                    ])
                 ;
 
                 if subs_to_keep.len() == mkv.subtitles_streams().len() {
-                    ffmpeg_process = ffmpeg_process.arg("-map").arg("0:s");
+                    ffmpeg_process = ffmpeg_process.args(&["-map", "0:s"])
                 }
                 else {
                     for (sub, _) in subs_to_keep {
-                        ffmpeg_process = ffmpeg_process
-                            .arg("-map").arg(format!("0:s:{sub}"))
-                        ;
+                        ffmpeg_process = ffmpeg_process.args(&["-map", &format!("0:s{sub}")]);
                     }
                 }
 
                 for (audio, track) in audio_to_keep.iter() {
-                    ffmpeg_process = ffmpeg_process
-                        .arg("-map").arg(format!("0:a:{audio}"))
-                    ;
+                    ffmpeg_process = ffmpeg_process.args(&["-map", &format!("0:a{audio}")]);
 
                     if LOSSLESS_AUDIO_CODECS.contains(&track.codec()) {
-                        ffmpeg_process = ffmpeg_process
-                            .arg("-c:a").arg("libopus")
-                            .arg("-ac").arg("2")
-                        ;
+                        ffmpeg_process = ffmpeg_process.args(&[
+                            "-c:a", "libopus",
+                            "-ac", "2"
+                        ]);
                     }
                     else {
-                        ffmpeg_process = ffmpeg_process
-                            .arg("-c:a").arg("copy")
-                        ;
+                        ffmpeg_process = ffmpeg_process.args(&["-c:a", "copy"]);
                     }
                 }
 
                 if attachments_to_keep.len() == mkv.attachments().len() {
-                    ffmpeg_process = ffmpeg_process.arg("-map").arg("0:t");
+                    ffmpeg_process = ffmpeg_process.args(&["-map", "0:t"]);
                 }
                 else {
                     for (attachment, _) in attachments_to_keep {
-                        ffmpeg_process = ffmpeg_process
-                            .arg("-map").arg(format!("0:t:{attachment}"))
-                        ;
+                        ffmpeg_process = ffmpeg_process.args(&["-map", &format!("0:t{attachment}")]);
                     }
                 }
 
                 if with_video_transcode {
-                    ffmpeg_process = ffmpeg_process
-                        .arg("-c:v").arg("libx265")
-                        .arg("-x265-params").arg("log-level=error")
-                        .arg("-crf").arg("19")
-                        .arg("-preset").arg("medium")
-                        .arg("-tune").arg("animation")
-                    ;
+                    ffmpeg_process = ffmpeg_process.args(&[
+                        "-c:v", "libx265",
+                        "-x265-params", "log-level=error",
+                        "-crf", "19",
+                        "-preset", "medium",
+                        "-tune", "animation"
+                    ]);
                 }
                 else {
-                    ffmpeg_process = ffmpeg_process
-                        .arg("-c:v").arg("copy")
-                    ;
+                    ffmpeg_process = ffmpeg_process.args(&["-c:v", "copy"]);
                 }
 
-                ffmpeg_process = ffmpeg_process
-                    .arg("-c:s").arg("copy")
-                    .arg("-metadata").arg("title=")
-                    .arg("-metadata:s:v").arg("title=")
-                    .arg("-metadata:s:a").arg("title=")
-                    .arg("-metadata:s:v").arg("language=und")
-                ;
+                ffmpeg_process = ffmpeg_process.args(&[
+                    "-c:s", "copy",
+                    "-metadata", "title=",
+                    "-metadata:s:v", "title=",
+                    "-metadata:s:a", "title=",
+                    "-metadata:s:v", "language=und",
+                ]);
 
-                let mut out_path = {
-                    if let Some(intermediate_path) = intermediate_path.as_ref() {
-                        intermediate_path.clone()
-                    }
-                    else {
-                        output_path.clone()
-                    }
-                };
-
+                let mut out_path = base_output_dir.clone();
                 out_path.push(&file_name);
-                ffmpeg_process = ffmpeg_process.arg(out_path.as_os_str());
+
+                ffmpeg_process = ffmpeg_process.arg(out_path);
 
                 let instant = Instant::now();
 
@@ -215,9 +152,9 @@ fn main() {
                             break;
                         }
 
-                        if let Some(intermediate) = intermediate_path.as_ref() {
+                        if let Some(intermediate) = args.intermediate_dir() {
                             let time_to_process = instant.elapsed();
-                            let mut output_path = output_path.clone();
+                            let mut output_path = args.output_dir().clone();
                             let mut result_path = intermediate.clone();
 
                             output_path.push(entry.file_name());
@@ -280,8 +217,8 @@ fn main() {
     if !clean_exit {
         error!("Exiting because of an error...");
 
-        if !dry_run {
-            if let Some(intermediate) = intermediate_path {
+        if !args.dry_run() {
+            if let Some(intermediate) = args.intermediate_dir() {
                 for entry in WalkDir::new(intermediate).max_depth(1).into_iter().filter_map(| f | f.ok()) {
                     let file_name = entry.file_name().to_string_lossy().to_string();
     
@@ -305,16 +242,16 @@ fn configure_log() -> LoggerHandle {
         .expect("Failed to start Logger")
 }
 
-fn prepare_paths(input: &Path, output: &Path, intermediate: &Option<PathBuf>) {
-    if !input.exists() {
+fn prepare_paths(args: &args::AppArgs) {
+    if !args.input_dir().exists() {
         panic!("Input path doesn't exist!");
     }
 
-    if !output.exists() {
-        fs::create_dir_all(&output).expect("Output directory didn't exist, and couldn't be created!");
+    if !args.output_dir().exists() {
+        fs::create_dir_all(args.output_dir()).expect("Output directory didn't exist, and couldn't be created!");
     }
 
-    if let Some(intermediate) = intermediate.as_ref() {
+    if let Some(intermediate) = args.intermediate_dir() {
         if !intermediate.exists() {
             fs::create_dir_all(intermediate).expect("Intermediate directory didn't exist, and couldn't be created!");
         }
