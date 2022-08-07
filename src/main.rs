@@ -129,10 +129,15 @@ fn main() {
                     .arg("-map").arg("0:v:0")
                 ;
 
-                for (sub, _) in subs_to_keep {
-                    ffmpeg_process = ffmpeg_process
-                        .arg("-map").arg(format!("0:s:{sub}"))
-                    ;
+                if subs_to_keep.len() == mkv.subtitles_streams().len() {
+                    ffmpeg_process = ffmpeg_process.arg("-map").arg("0:s");
+                }
+                else {
+                    for (sub, _) in subs_to_keep {
+                        ffmpeg_process = ffmpeg_process
+                            .arg("-map").arg(format!("0:s:{sub}"))
+                        ;
+                    }
                 }
 
                 for (audio, track) in audio_to_keep.iter() {
@@ -142,21 +147,26 @@ fn main() {
 
                     if LOSSLESS_AUDIO_CODECS.contains(&track.codec()) {
                         ffmpeg_process = ffmpeg_process
-                            .arg(format!("-c:a:{audio}")).arg("libopus")
+                            .arg("-c:a").arg("libopus")
                             .arg("-ac").arg("2")
                         ;
                     }
                     else {
                         ffmpeg_process = ffmpeg_process
-                            .arg(format!("-c:a:{audio}")).arg("copy")
+                            .arg("-c:a").arg("copy")
                         ;
                     }
                 }
 
-                for (attachment, _) in attachments_to_keep {
-                    ffmpeg_process = ffmpeg_process
-                        .arg("-map").arg(format!("0:t:{attachment}"))
-                    ;
+                if attachments_to_keep.len() == mkv.attachments().len() {
+                    ffmpeg_process = ffmpeg_process.arg("-map").arg("0:t");
+                }
+                else {
+                    for (attachment, _) in attachments_to_keep {
+                        ffmpeg_process = ffmpeg_process
+                            .arg("-map").arg(format!("0:t:{attachment}"))
+                        ;
+                    }
                 }
 
                 if with_video_transcode {
