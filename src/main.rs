@@ -83,17 +83,17 @@ fn main() {
                     ])
                 ;
 
-                if subs_to_keep.len() == mkv.subtitles_streams().len() {
+                if !subs_to_keep.is_empty() && subs_to_keep.len() == mkv.subtitles_streams().len() {
                     ffmpeg_process = ffmpeg_process.args(&["-map", "0:s"])
                 }
                 else {
                     for (sub, _) in subs_to_keep {
-                        ffmpeg_process = ffmpeg_process.args(&["-map", &format!("0:s{sub}")]);
+                        ffmpeg_process = ffmpeg_process.args(&["-map", &format!("0:s:{sub}")]);
                     }
                 }
 
                 for (audio, track) in audio_to_keep.iter() {
-                    ffmpeg_process = ffmpeg_process.args(&["-map", &format!("0:a{audio}")]);
+                    ffmpeg_process = ffmpeg_process.args(&["-map", &format!("0:a:{audio}")]);
 
                     if LOSSLESS_AUDIO_CODECS.contains(&track.codec()) {
                         ffmpeg_process = ffmpeg_process.args(&[
@@ -106,12 +106,12 @@ fn main() {
                     }
                 }
 
-                if attachments_to_keep.len() == mkv.attachments().len() {
+                if !attachments_to_keep.is_empty() && attachments_to_keep.len() == mkv.attachments().len() {
                     ffmpeg_process = ffmpeg_process.args(&["-map", "0:t"]);
                 }
                 else {
                     for (attachment, _) in attachments_to_keep {
-                        ffmpeg_process = ffmpeg_process.args(&["-map", &format!("0:t{attachment}")]);
+                        ffmpeg_process = ffmpeg_process.args(&["-map", &format!("0:t:{attachment}")]);
                     }
                 }
 
