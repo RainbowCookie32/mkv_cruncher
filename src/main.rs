@@ -5,12 +5,7 @@ use std::time::Instant;
 use std::path::{Path, PathBuf};
 
 use log::*;
-use log4rs::Config;
-use log4rs::config::{Appender, Root};
-use log4rs::append::file::FileAppender;
-use log4rs::append::console::{ConsoleAppender, Target};
-use log4rs::encode::pattern::PatternEncoder;
-use log4rs::filter::threshold::ThresholdFilter;
+use flexi_logger::{Logger, LoggerHandle};
 
 use clap::Parser;
 use walkdir::WalkDir;
@@ -69,7 +64,8 @@ fn main() {
     let never_transcode_video = args.force_never_transcode;
     let always_transcode_video = args.force_always_transcode;
 
-    configure_log();
+    let _logger_handle = configure_log();
+    
     prepare_paths(&input_path, &output_path, &intermediate_path);
 
     println!();
@@ -288,41 +284,15 @@ fn main() {
     }
 }
 
-fn configure_log() {
-    if PathBuf::from("cruncher.log").exists() {
-        if let Err(e) = fs::copy("cruncher.log", "cruncher.old") {
-            println!("Error saving old log! {e}");
-        }
-    }
-
-    let stdout_log = ConsoleAppender::builder()
-        .target(Target::Stdout)
-        .encoder(Box::new(PatternEncoder::new("[{d(%Y-%m-%d %H:%M:%S)}] [{l}]: {m}\n")))
-        .build()
-    ;
-
-    let logfile = FileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("[{d(%Y-%m-%d %H:%M:%S)}] [{l}]: {m}\n")))
-        .append(false)
-        .build("cruncher.log")
-        .expect("Failed to initialize file logging")
-    ;
-
-    let log_config = Config::builder()
-        .appenders([
-            Appender::builder().filter(Box::new(ThresholdFilter::new(LevelFilter::Info))).build("console", Box::new(stdout_log)),
-            Appender::builder().build("logfile", Box::new(logfile))
-        ])
-        .build(
-            Root::builder()
-                .appender("console")
-                .appender("logfile")
-                .build(LevelFilter::Trace)
-        )
-        .expect("Failed to configure logging")
-    ;
-
-    log4rs::init_config(log_config).expect("Failed to init logging.");
+fn configure_log() -> LoggerHandle {
+    Logger::try_with_str("info")
+        .expect("Failed to create Logger")
+        .log_to_file(flexi_logger::FileSpec::default())
+        .duplicate_to_stdout(flexi_logger::Duplicate::Info)
+        .write_mode(flexi_logger::WriteMode::BufferAndFlush)
+        .format_for_files(flexi_logger::detailed_format)
+        .start()
+        .expect("Failed to start Logger")
 }
 
 fn prepare_paths(input: &Path, output: &Path, intermediate: &Option<PathBuf>) {
