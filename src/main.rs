@@ -46,7 +46,7 @@ fn main() {
 
             if let Ok(mkv) = ffprobe::probe_file(entry.path()) {
                 let with_video_transcode = {
-                    if args.can_transcode_video() && !analyze_video(&mkv) {
+                    if args.forced_transcode() || (args.can_transcode_video() && analyze_video(&mkv)) {
                         info!("  Video track will be transcoded.");
                         true
                     }

@@ -47,6 +47,10 @@ impl AppArgs {
         self.dry_run
     }
 
+    pub fn forced_transcode(&self) -> bool {
+        self.force_always_transcode
+    }
+
     pub fn can_transcode_video(&self) -> bool {
         self.force_always_transcode || !self.force_never_transcode
     }
