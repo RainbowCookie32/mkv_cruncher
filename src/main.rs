@@ -1,4 +1,5 @@
 mod args;
+mod task;
 mod ffprobe;
 
 use std::fs;
@@ -21,11 +22,17 @@ fn main() {
     println!();
     info!("Reading directory {}", args.input_dir().as_os_str().to_string_lossy());
 
-    let dir_walker = WalkDir::new(args.input_dir())
-        .max_depth(1)
-        .into_iter()
-        .filter_map(| d | d.ok())
-    ;
+    let dir_walker = {
+        let mut walker = WalkDir::new(args.input_dir());
+
+        if !args.recursive() {
+            walker = walker.max_depth(1);
+        }
+        
+        walker
+            .into_iter()
+            .filter_map(| d | d.ok())
+    };
 
     let base_output_dir = {
         if let Some(intermediate_path) = args.intermediate_dir() {

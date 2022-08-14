@@ -31,6 +31,13 @@ pub struct AppArgs {
     dry_run: bool,
 
     #[clap(
+        short = 'r',
+        long,
+        help="Whether or not to go into subfolders in the Input directory."
+    )]
+    recursive: bool,
+
+    #[clap(
         long,
         help="Never transcode the video stream of the input files."
     )]
@@ -43,6 +50,10 @@ pub struct AppArgs {
 }
 
 impl AppArgs {
+    pub fn recursive(&self) -> bool {
+        self.recursive
+    }
+    
     pub fn dry_run(&self) -> bool {
         self.dry_run
     }
