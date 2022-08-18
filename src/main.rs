@@ -1,5 +1,4 @@
 mod args;
-mod task;
 mod ffprobe;
 
 use std::fs;
@@ -76,16 +75,51 @@ fn main() {
                 }
 
                 let mut ffmpeg_process = subprocess::Exec::cmd("ffmpeg")
-                    // Feed the file using stdin.
-                    .stdin(fs::read(entry.path()).unwrap_or_default())
                     .args(&[
                         // Make ffmpeg less noisy.
                         "-hide_banner", "-loglevel", "error",
                         // Preserve progress stats and overwrite existing files.
-                        "-stats", "-y",
-                        // Read the file from stdin.
-                        "-i", "pipe:0",
-                        // // Grab only the first video stream. Skips cover pictures and horrible fuck-ups.
+                        "-stats", "-y"
+                    ])
+                ;
+
+                if ByteSize::b(mkv.size()) < ByteSize::gb(4) {
+                    info!("  Loading MKV file into memory.");
+
+                    match fs::read(entry.path()) {
+                        Ok(buf) => {
+                            info!("  File loaded successfully, launching ffmpeg.");
+
+                            ffmpeg_process = ffmpeg_process
+                                // Feed the file using stdin.
+                                .stdin(buf)
+                                // Read the file from stdin.
+                                .args(&["-i", "pipe:0"])
+                            ;
+                        }
+                        Err(e) => {
+                            info!("  Failed to load MKV file into memory: {e}");
+                            info!("  Falling back to reading from disk.");
+
+                            ffmpeg_process = ffmpeg_process
+                                .arg("-i")
+                                .arg(entry.path().as_os_str())
+                            ;
+                        }
+                    }
+                }
+                else {
+                    info!("  MKV file is too big, reading from disk.");
+
+                    ffmpeg_process = ffmpeg_process
+                        .arg("-i")
+                        .arg(entry.path().as_os_str())
+                    ;
+                }
+
+                ffmpeg_process = ffmpeg_process
+                    .args(&[
+                        // Grab only the first video stream. Skips cover pictures and horrible fuck-ups.
                         "-map", "0:v:0"
                     ])
                 ;
