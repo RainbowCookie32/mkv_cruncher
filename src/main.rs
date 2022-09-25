@@ -353,7 +353,7 @@ fn analyze_sub_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         // Filter out Signs & Songs sub tracks.
         .filter(| (_, s) | {
             let name = s.stream_title();
-            !name.contains("S&S") && !name.contains("Signs") && !name.contains("Songs")
+            name.contains("Dialogue") || (!name.contains("S&S") && !name.contains("Signs") && !name.contains("Songs"))
         })
         // Filter out unused languages.
         .filter(| (_, s) | {
@@ -408,10 +408,10 @@ fn analyze_audio_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
             let l = s.stream_language();
             l.is_empty() || l == "jpn" || l == "und"
         })
-        // Fallback filter.
+        // Fallback filter + nuke commentary tracks.
         .filter(| (_, s) | {
             let stream_name = s.stream_title().to_lowercase();
-            !stream_name.contains("eng") | !stream_name.contains("english")
+            !stream_name.contains("eng") || !stream_name.contains("english") || !stream_name.contains("commentary")
         })
         .collect()
     ;
@@ -471,21 +471,13 @@ fn analyze_attachments(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         .collect()
     ;
 
+    let preserved = preserved_attachments.len();
+
     preserved_attachments.sort_unstable_by_key(| (_, a) | a.stream_title());
     preserved_attachments.dedup_by_key(| (_, a) | a.stream_title());
 
-    if preserved_attachments.len() < attachment_count {
-        let mut attachment_list = String::new();
-
-        for (i, (_, a)) in preserved_attachments.iter().enumerate() {
-            attachment_list.push_str(&a.stream_title());
-            
-            if i != preserved_attachments.len() - 1 {
-                attachment_list.push_str(", ");
-            }
-        }
-
-        info!("  Keeping {}/{attachment_count} attachments: {attachment_list}", preserved_attachments.len());
+    if preserved < attachment_count {
+        info!("  Keeping {preserved}/{attachment_count} attachments.");
     }
     else {
         info!("  Keeping all attachments ({attachment_count})");
