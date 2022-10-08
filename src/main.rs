@@ -350,10 +350,25 @@ fn analyze_sub_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
 
     preserved_streams = preserved_streams
         .into_iter()
-        // Filter out Signs & Songs sub tracks.
+        // Filter out unwanted sub tracks.
         .filter(| (_, s) | {
-            let name = s.stream_title();
-            name.contains("Dialogue") || (!name.contains("S&S") && !name.contains("Signs") && !name.contains("Songs"))
+            let name = s.stream_title().to_lowercase();
+
+            if name.contains("jap") || name.contains("jpn") || s.stream_language() == "jpn" {
+                true
+            }
+            else {
+                let mut keep = true;
+
+                for bad_word in BAD_SUB_WORDS {
+                    if name == bad_word || name.contains(bad_word) {
+                        keep = false;
+                        break;
+                    }
+                }
+                
+                keep
+            }
         })
         // Filter out unused languages.
         .filter(| (_, s) | {
@@ -411,7 +426,7 @@ fn analyze_audio_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         // Fallback filter + nuke commentary tracks.
         .filter(| (_, s) | {
             let stream_name = s.stream_title().to_lowercase();
-            !stream_name.contains("eng") || !stream_name.contains("english") || !stream_name.contains("commentary")
+            !stream_name.contains("commentary") && (!stream_name.contains("eng") || !stream_name.contains("english"))
         })
         .collect()
     ;
@@ -495,6 +510,16 @@ const OK_SUB_LANGS: [&str; 5] = [
     "jpn",
     "spa",
     "und"
+];
+
+const BAD_SUB_WORDS: [&str; 7] = [
+    "s&s",
+    "signs",
+    "songs",
+    "spain",
+    "closed",
+    "captions",
+    "closed captions"
 ];
 
 const LOSSLESS_AUDIO_CODECS: [&str; 4] = [
