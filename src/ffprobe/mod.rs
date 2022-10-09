@@ -4,7 +4,6 @@ pub mod error;
 use std::path::Path;
 
 use serde::Deserialize;
-use subprocess::Exec;
 
 use error::ProbeError;
 
@@ -54,18 +53,10 @@ struct FFProbeFormat {
 }
 
 pub fn probe_file(path: &Path) -> Result<mkv::MkvFile, ProbeError> {
-    let ffprobe = Exec::cmd("ffprobe")
-        .args(&[
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams"
-        ])
-        .arg(path)
-    ;
+    let ffprobe = duct::cmd!("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path);
 
-    let data = ffprobe.capture().map_err(ProbeError::ExecError)?;
-    let probe = serde_json::from_slice::<FFProbeResult>(&data.stdout).map_err(ProbeError::SerdeError)?;
+    let stdout = ffprobe.read().map_err(ProbeError::ExecError)?;
+    let probe = serde_json::from_str::<FFProbeResult>(&stdout).map_err(ProbeError::SerdeError)?;
 
     mkv::MkvFile::parse_result(probe)
 }
