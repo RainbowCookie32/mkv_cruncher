@@ -209,9 +209,14 @@ fn main() {
                 match ffmpeg_process.run() {
                     Ok(out) => {
                         if !out.status.success() {
-                            error!("ffmpeg didn't exit successfully, exiting...");
+                            if let Some(exit_code) = out.status.code() {
+                                error!("ffmpeg didn't exit successfully (code: {exit_code}), exiting...");
+                            }
+                            else {
+                                error!("ffmpeg didn't exit successfully, exiting...");
+                            }
+                            
                             clean_exit = false;
-
                             break;
                         }
 
