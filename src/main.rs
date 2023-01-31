@@ -194,6 +194,7 @@ fn main() {
                         ffmpeg_args.push(String::from("pipe:0"));
                         
                         duct::cmd("ffmpeg", ffmpeg_args)
+                            .env("SVT_LOG", "fatal")
                             .stdout_capture()
                             .stdin_bytes(stdin)
                     }
@@ -202,6 +203,7 @@ fn main() {
                         ffmpeg_args.push(entry.path().as_os_str().to_string_lossy().to_string());
 
                         duct::cmd("ffmpeg", ffmpeg_args)
+                            .env("SVT_LOG", "fatal")
                             .stdout_capture()
                     }
                 };
