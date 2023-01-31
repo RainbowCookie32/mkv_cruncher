@@ -27,6 +27,8 @@ fn main() {
         if !args.recursive() {
             walker = walker.max_depth(1);
         }
+
+        walker = walker.sort_by(| a, b | a.file_name().cmp(b.file_name()));
         
         walker
             .into_iter()
@@ -148,19 +150,19 @@ fn main() {
                 ffmpeg_args.push(String::from("-c:v"));
 
                 if with_video_transcode {
-                    ffmpeg_args.push(String::from("libx265"));
-
-                    ffmpeg_args.push(String::from("-x265-params"));
-                    ffmpeg_args.push(String::from("log-level=error"));
+                    ffmpeg_args.push(String::from("libsvtav1"));
 
                     ffmpeg_args.push(String::from("-crf"));
-                    ffmpeg_args.push(String::from("19"));
+                    ffmpeg_args.push(String::from("30"));
 
                     ffmpeg_args.push(String::from("-preset"));
-                    ffmpeg_args.push(String::from("medium"));
+                    ffmpeg_args.push(String::from("7"));
 
-                    ffmpeg_args.push(String::from("-tune"));
-                    ffmpeg_args.push(String::from("animation"));
+                    ffmpeg_args.push(String::from("-g"));
+                    ffmpeg_args.push(String::from("120"));
+
+                    ffmpeg_args.push(String::from("-pix_fmt"));
+                    ffmpeg_args.push(String::from("yuv420p10le"));
                 }
                 else {
                     ffmpeg_args.push(String::from("copy"));
@@ -453,12 +455,12 @@ fn analyze_audio_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         // Filter non-japanese, leave undefined just in case.
         .filter(| (_, s) | {
             let l = s.stream_language();
-            l.is_empty() || l == "jpn" || l == "und"
+            l.is_empty() || l == "jpn" || l == "chi" || l == "und"
         })
         // Fallback filter + nuke commentary tracks.
         .filter(| (_, s) | {
             let stream_name = s.stream_title().to_lowercase();
-            !stream_name.contains("commentary") && (!stream_name.contains("eng") || !stream_name.contains("english"))
+            !stream_name.contains("commentary") && !stream_name.contains("description") && (!stream_name.contains("eng") || !stream_name.contains("english"))
         })
         .collect()
     ;
@@ -513,7 +515,8 @@ fn analyze_attachments(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         .enumerate()
         .filter(| (_, a) | {
             let name = a.stream_title().to_lowercase();
-            name.contains("ttf") || name.contains("otf")
+            // Preserve fonts and files without extensions.
+            name.contains("ttf") || name.contains("otf") || !name.contains(".")
         })
         .collect()
     ;
