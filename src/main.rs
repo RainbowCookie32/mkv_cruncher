@@ -84,6 +84,10 @@ impl Cruncher {
         let total_timer = Instant::now();
 
         for file in self.files.iter() {
+            let file_name = file.file_name().unwrap().to_str().unwrap_or_default();
+
+            info!("Processing file '{file_name}'");
+
             let mkv = ffprobe::probe_file(file)?;
             let transcode_video = match self.transcode_mode {
                 TranscodeMode::Auto => analyze_video(&mkv),
@@ -226,7 +230,7 @@ impl Cruncher {
                 }
             };
 
-            target_path.push(file.file_name().unwrap());
+            target_path.push(file_name);
             ffmpeg_arguments.push(target_path.to_str().unwrap_or_default().to_owned());
 
             let mut ffmpeg_process = Command::new("ffmpeg");
@@ -273,11 +277,24 @@ impl Cruncher {
                     }
                 }
 
-                handle.wait().unwrap();
+                if let Ok(exit_status) = handle.wait() {
+                    if exit_status.success() && self.intermediate.is_some() {
+                        let mut output_path = self.output.clone();
+                        output_path.push(file_name);
 
-                let elapsed_secs = file_instant.elapsed().as_secs();
-                bar.finish_with_message(format!("Finished in {}m{}s", elapsed_secs / 60, elapsed_secs % 60));
+                        fs::copy(&target_path, &output_path).expect("Failed to copy processed file from intermediate dir");
+                        fs::remove_file(&target_path).expect("Failed to remove processed file from intermediate dir");
+                    }
+
+                    let elapsed_secs = file_instant.elapsed().as_secs();
+                    bar.finish_with_message(format!("Finished in {}m{}s", elapsed_secs / 60, elapsed_secs % 60));
+                }
             }
+        }
+
+        if self.files.len() > 1 {
+            let elapsed_secs = total_timer.elapsed().as_secs();
+            info!("Finished processing all files in {}m{}s", elapsed_secs / 60, elapsed_secs % 60);
         }
 
         Ok(())
