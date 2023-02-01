@@ -2,7 +2,10 @@ mod args;
 mod ffprobe;
 
 use std::fs;
+use std::path::PathBuf;
 use std::time::Instant;
+use std::process::Command;
+use std::io::{BufRead, BufReader, Write};
 
 use log::*;
 use flexi_logger::{Logger, LoggerHandle};
@@ -12,296 +15,273 @@ use walkdir::WalkDir;
 use bytesize::ByteSize;
 use ffprobe::mkv::{MkvFile, Stream};
 
+pub enum TranscodeMode {
+    Auto,
+    Force,
+    Never
+}
+
+pub struct Cruncher {
+    output: PathBuf,
+    intermediate: Option<PathBuf>,
+
+    files: Vec<PathBuf>,
+    transcode_mode: TranscodeMode
+}
+
+impl Cruncher {
+    fn init(input: PathBuf, output: PathBuf, intermediate: Option<PathBuf>, transcode_mode: TranscodeMode) -> Cruncher {
+        if !input.exists() {
+            panic!("Input directory doesn't exist!");
+        }
+
+        if let Some(intermediate) = intermediate.as_ref() {
+            if !intermediate.exists() {
+                if let Err(e) = fs::create_dir_all(intermediate) {
+                    panic!("Failed to create intermediate directory! {e}");
+                }
+                else {
+                    warn!("Created intermediate directory at {}", intermediate.to_string_lossy())
+                }
+            }
+        }
+
+        if !output.exists() {
+            if let Err(e) = fs::create_dir_all(&output) {
+                panic!("Failed to create output directory! {e}");
+            }
+            else {
+                info!("Created output directory at {}", output.to_string_lossy())
+            }
+        }
+
+        info!("Reading directory {}", input.as_os_str().to_string_lossy());
+
+        let files = {
+            let mut walker = WalkDir::new(&input);
+            walker = walker.sort_by(| a, b | a.file_name().cmp(b.file_name()));
+                
+            walker
+                .into_iter()
+                .filter_map(| entry | entry.ok())
+                .filter(| entry | entry.file_type().is_file())
+                .filter(| entry | entry.file_name().to_string_lossy().contains(".mkv"))
+                .map(| entry | entry.into_path())
+                .collect::<Vec<PathBuf>>()
+        };
+
+        Cruncher {
+            output,
+            intermediate,
+
+            files,
+            transcode_mode
+        }
+    }
+
+    fn start_cruncher(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let total_timer = Instant::now();
+
+        for file in self.files.iter() {
+            let mkv = ffprobe::probe_file(file)?;
+            let transcode_video = match self.transcode_mode {
+                TranscodeMode::Auto => analyze_video(&mkv),
+                TranscodeMode::Force => true,
+                TranscodeMode::Never => false
+            };
+
+            let kept_subs = analyze_sub_tracks(&mkv);
+            let kept_audio = analyze_audio_tracks(&mkv);
+            let kept_attachments = analyze_attachments(&mkv);
+
+            let mut ffmpeg_arguments = vec![
+                // Silence ffmpeg.
+                String::from("-hide_banner"), String::from("-loglevel"), String::from("error"),
+                // Print progress stats to stdout, always overwrite existing files.
+                String::from("-progress"), String::from("pipe:1"), String::from("-y"),
+            ];
+
+            let mut file_buffer = Vec::new();
+
+            // Avoid locking up my system by loading massive files.
+            if ByteSize::b(mkv.size()) < ByteSize::gb(4) {
+                info!("  Loading MKV file into memory.");
+
+                match fs::read(file) {
+                    Ok(buf) => {
+                        info!("  File loaded successfully, launching ffmpeg.");
+
+                        file_buffer = buf;
+                        ffmpeg_arguments.push(String::from("-i"));
+                        ffmpeg_arguments.push(String::from("pipe:0"));
+                    }
+                    Err(e) => {
+                        info!("  Failed to load MKV file into memory: {e}");
+                        info!("  Falling back to reading from disk.");
+                    }
+                }
+            }
+            else {
+                info!("  MKV file is too big, reading from disk.");
+
+                ffmpeg_arguments.push(String::from("-i"));
+                ffmpeg_arguments.push(file.to_str().unwrap_or_default().to_owned());
+            }
+
+            // Grab only the first video stream. Skips cover pictures and horrible fuck-ups.
+            ffmpeg_arguments.push(String::from("-map"));
+            ffmpeg_arguments.push(String::from("0:v:0"));
+
+            // Use -map 0:s if all subs are being kept instead of mapping one by one.
+            // The is_empty check is a failsafe to avoid mapping when there are *no* subtitles.
+            // IIRC, ffmpeg doesn't like that, so don't remove it, future me.
+            if !kept_subs.is_empty() && kept_subs.len() == mkv.subtitles_streams().len() {
+                ffmpeg_arguments.push(String::from("-map"));
+                ffmpeg_arguments.push(String::from("0:s"));
+            }
+            else {
+                for (stream_idx, _) in kept_subs {
+                    ffmpeg_arguments.push(String::from("-map"));
+                    ffmpeg_arguments.push(format!("0:s:{stream_idx}"));
+                }
+            }
+
+            for (stream_idx, stream) in kept_audio.iter() {
+                ffmpeg_arguments.push(String::from("-map"));
+                ffmpeg_arguments.push(format!("0:a:{stream_idx}"));
+
+                if LOSSLESS_AUDIO_CODECS.contains(&stream.codec()) {
+                    ffmpeg_arguments.push(String::from("-c:a"));
+                    ffmpeg_arguments.push(String::from("libopus"));
+                    ffmpeg_arguments.push(String::from("-ac"));
+                    ffmpeg_arguments.push(String::from("2"));
+                }
+                else {
+                    ffmpeg_arguments.push(String::from("-c:a"));
+                    ffmpeg_arguments.push(String::from("copy"));
+                }
+            }
+
+            // Same deal as subs mapping, no removing the is_empty check. It's important.
+            if !kept_attachments.is_empty() && kept_attachments.len() == mkv.attachments().len() {
+                ffmpeg_arguments.push(String::from("-map"));
+                ffmpeg_arguments.push(String::from("0:t"));
+            }
+            else {
+                for (attachment, _) in kept_attachments {
+                    ffmpeg_arguments.push(String::from("-map"));
+                    ffmpeg_arguments.push(format!("0:t:{attachment}"));
+                }
+            }
+            
+            if transcode_video {
+                ffmpeg_arguments.push(String::from("-c:v"));
+                ffmpeg_arguments.push(String::from("libsvtav1"));
+
+                ffmpeg_arguments.push(String::from("-crf"));
+                ffmpeg_arguments.push(String::from("30"));
+
+                ffmpeg_arguments.push(String::from("-preset"));
+                ffmpeg_arguments.push(String::from("7"));
+
+                ffmpeg_arguments.push(String::from("-g"));
+                ffmpeg_arguments.push(String::from("120"));
+
+                ffmpeg_arguments.push(String::from("-pix_fmt"));
+                ffmpeg_arguments.push(String::from("yuv420p10le"));
+            }
+            else {
+                ffmpeg_arguments.push(String::from("-c:v"));
+                ffmpeg_arguments.push(String::from("copy"));
+            }
+
+            // Copy the "codec" of the subtitle tracks.
+            ffmpeg_arguments.push(String::from("-c:s"));
+            ffmpeg_arguments.push(String::from("copy"));
+
+            // Remove title metadata from the file
+            ffmpeg_arguments.push(String::from("-metadata"));
+            ffmpeg_arguments.push(String::from("title="));
+
+            // and the video track
+            ffmpeg_arguments.push(String::from("-metadata:s:v"));
+            ffmpeg_arguments.push(String::from("title="));
+
+            // *and* the audio track.
+            ffmpeg_arguments.push(String::from("-metadata:s:a"));
+            ffmpeg_arguments.push(String::from("title="));
+
+            // Some people add language metadata to video streams for some reason.
+            // Don't be like those people, you throw off my shit scripts.
+            ffmpeg_arguments.push(String::from("-metadata:s:v"));
+            ffmpeg_arguments.push(String::from("language=und"));
+
+            let mut target_path = {
+                if let Some(intermediate) = self.intermediate.as_ref() {
+                    intermediate.clone()
+                }
+                else {
+                    self.output.clone()
+                }
+            };
+
+            target_path.push(file.file_name().unwrap());
+            ffmpeg_arguments.push(target_path.to_str().unwrap_or_default().to_owned());
+
+            let mut ffmpeg_process = Command::new("ffmpeg");
+
+            if !file_buffer.is_empty() {
+                ffmpeg_process.stdin(std::process::Stdio::piped());
+            }
+
+            ffmpeg_process
+                .args(ffmpeg_arguments)
+                .env("SVT_LOG", "fatal")
+                .stdout(std::process::Stdio::piped());
+
+            let file_instant = Instant::now();
+
+            if let Ok(mut handle) = ffmpeg_process.spawn() {
+                if let Some(mut stdin) = handle.stdin.take() {
+                    std::thread::spawn(move || {
+                        stdin.write_all(&file_buffer).expect("Failed to write file to stdin");
+                    });
+                }
+
+                if let Some(stdout) = handle.stdout.take() {
+                    let stdout_reader = BufReader::new(stdout);
+                    let stdout_lines = stdout_reader.lines();
+
+                    for line in stdout_lines.flatten() {
+                        // info!("{line}");
+                    }
+                }
+
+                handle.wait().unwrap();
+            }
+        }
+
+        Ok(())
+    }
+}
+
 fn main() {
     let args = args::AppArgs::parse();
     let _logger_handle = configure_log();
 
-    prepare_paths(&args);
+    info!("Starting cruncher...\n");
 
-    println!();
-    info!("Reading directory {}", args.input_dir().as_os_str().to_string_lossy());
+    let mut cruncher = Cruncher::init(args.input_dir(), args.output_dir(), args.intermediate_dir(), args.transcode_mode());
 
-    let dir_walker = {
-        let mut walker = WalkDir::new(args.input_dir());
-
-        if !args.recursive() {
-            walker = walker.max_depth(1);
-        }
-
-        walker = walker.sort_by(| a, b | a.file_name().cmp(b.file_name()));
-        
-        walker
-            .into_iter()
-            .filter_map(| d | d.ok())
-    };
-
-    let base_output_dir = {
-        if let Some(intermediate_path) = args.intermediate_dir() {
-            intermediate_path.clone()
-        }
-        else {
-            args.output_dir().clone()
-        }
-    };
-
-    let mut clean_exit = true;
-
-    for entry in dir_walker {
-        let file_name = entry.file_name().to_string_lossy().to_string();
-
-        if entry.file_type().is_file() && file_name.contains("mkv") {
-            info!("Currently processing: {file_name}");
-
-            if let Ok(mkv) = ffprobe::probe_file(entry.path()) {
-                let with_video_transcode = {
-                    if args.forced_transcode() || (args.can_transcode_video() && analyze_video(&mkv)) {
-                        info!("  Video track will be transcoded.");
-                        true
-                    }
-                    else {
-                        info!("  Video track will be copied.");
-                        false
-                    }
-                };
-
-                let subs_to_keep = analyze_sub_tracks(&mkv);
-                let audio_to_keep = analyze_audio_tracks(&mkv);
-                let attachments_to_keep = analyze_attachments(&mkv);
-
-                if args.dry_run() {
-                    info!("Dry run was requested, moving on...");
-                    trace!("------");
-                    println!();
-
-                    continue;
-                }
-
-                let mut stdin = None;
-                let mut ffmpeg_args = vec![
-                    // Make ffmpeg less noisy.
-                    String::from("-hide_banner"), String::from("-loglevel"), String::from("error"),
-                    // Preserve progress stats and overwrite existing files.
-                    String::from("-stats"), String::from("-y")
-                ];
-
-                if ByteSize::b(mkv.size()) < ByteSize::gb(4) {
-                    info!("  Loading MKV file into memory.");
-
-                    match fs::read(entry.path()) {
-                        Ok(buf) => {
-                            info!("  File loaded successfully, launching ffmpeg.");
-                            stdin = Some(buf);
-                        }
-                        Err(e) => {
-                            info!("  Failed to load MKV file into memory: {e}");
-                            info!("  Falling back to reading from disk.");
-                        }
-                    }
-                }
-                else {
-                    info!("  MKV file is too big, reading from disk.");
-
-                    ffmpeg_args.push(String::from("-i"));
-                    ffmpeg_args.push(entry.path().as_os_str().to_string_lossy().to_string());
-                }
-
-                // Grab only the first video stream. Skips cover pictures and horrible fuck-ups.
-                ffmpeg_args.push(String::from("-map"));
-                ffmpeg_args.push(String::from("0:v:0"));
-
-                if !subs_to_keep.is_empty() && subs_to_keep.len() == mkv.subtitles_streams().len() {
-                    ffmpeg_args.push(String::from("-map"));
-                    ffmpeg_args.push(String::from("0:s"));
-                }
-                else {
-                    for (sub, _) in subs_to_keep {
-                        ffmpeg_args.push(String::from("-map"));
-                        ffmpeg_args.push(format!("0:s:{sub}"));
-                    }
-                }
-
-                for (audio, track) in audio_to_keep.iter() {
-                    ffmpeg_args.push(String::from("-map"));
-                    ffmpeg_args.push(format!("0:a:{audio}"));
-
-                    if LOSSLESS_AUDIO_CODECS.contains(&track.codec()) {
-                        ffmpeg_args.push(String::from("-c:a"));
-                        ffmpeg_args.push(String::from("libopus"));
-                        ffmpeg_args.push(String::from("-ac"));
-                        ffmpeg_args.push(String::from("2"));
-                    }
-                    else {
-                        ffmpeg_args.push(String::from("-c:a"));
-                        ffmpeg_args.push(String::from("copy"));
-                    }
-                }
-
-                if !attachments_to_keep.is_empty() && attachments_to_keep.len() == mkv.attachments().len() {
-                    ffmpeg_args.push(String::from("-map"));
-                    ffmpeg_args.push(String::from("0:t"));
-                }
-                else {
-                    for (attachment, _) in attachments_to_keep {
-                        ffmpeg_args.push(String::from("-map"));
-                        ffmpeg_args.push(format!("0:t:{attachment}"));
-                    }
-                }
-
-                ffmpeg_args.push(String::from("-c:v"));
-
-                if with_video_transcode {
-                    ffmpeg_args.push(String::from("libsvtav1"));
-
-                    ffmpeg_args.push(String::from("-crf"));
-                    ffmpeg_args.push(String::from("30"));
-
-                    ffmpeg_args.push(String::from("-preset"));
-                    ffmpeg_args.push(String::from("7"));
-
-                    ffmpeg_args.push(String::from("-g"));
-                    ffmpeg_args.push(String::from("120"));
-
-                    ffmpeg_args.push(String::from("-pix_fmt"));
-                    ffmpeg_args.push(String::from("yuv420p10le"));
-                }
-                else {
-                    ffmpeg_args.push(String::from("copy"));
-                }
-
-                ffmpeg_args.push(String::from("-c:s"));
-                ffmpeg_args.push(String::from("copy"));
-
-                ffmpeg_args.push(String::from("-metadata"));
-                ffmpeg_args.push(String::from("title="));
-
-                ffmpeg_args.push(String::from("-metadata:s:v"));
-                ffmpeg_args.push(String::from("title="));
-
-                ffmpeg_args.push(String::from("-metadata:s:a"));
-                ffmpeg_args.push(String::from("title="));
-
-                ffmpeg_args.push(String::from("-metadata:s:v"));
-                ffmpeg_args.push(String::from("language=und"));
-
-                let mut out_path = base_output_dir.clone();
-                out_path.push(&file_name);
-
-                ffmpeg_args.push(out_path.to_string_lossy().to_string());
-
-                let ffmpeg_process = {
-                    if let Some(stdin) = stdin {
-                        ffmpeg_args.push(String::from("-i"));
-                        ffmpeg_args.push(String::from("pipe:0"));
-                        
-                        duct::cmd("ffmpeg", ffmpeg_args)
-                            .env("SVT_LOG", "fatal")
-                            .stdout_capture()
-                            .stdin_bytes(stdin)
-                    }
-                    else {
-                        ffmpeg_args.push(String::from("-i"));
-                        ffmpeg_args.push(entry.path().as_os_str().to_string_lossy().to_string());
-
-                        duct::cmd("ffmpeg", ffmpeg_args)
-                            .env("SVT_LOG", "fatal")
-                            .stdout_capture()
-                    }
-                };
-
-                let instant = Instant::now();
-
-                match ffmpeg_process.run() {
-                    Ok(out) => {
-                        if !out.status.success() {
-                            if let Some(exit_code) = out.status.code() {
-                                error!("ffmpeg didn't exit successfully (code: {exit_code}), exiting...");
-                            }
-                            else {
-                                error!("ffmpeg didn't exit successfully, exiting...");
-                            }
-                            
-                            clean_exit = false;
-                            break;
-                        }
-
-                        let time_to_process = instant.elapsed();
-
-                        if let Some(intermediate) = args.intermediate_dir() {
-                            let mut output_path = args.output_dir().clone();
-                            let mut result_path = intermediate.clone();
-
-                            output_path.push(entry.file_name());
-                            result_path.push(entry.file_name());
-
-                            info!("ffmpeg exited successfully, copying result to output dir...");
-                            info!("Time to process: {}m{}s", time_to_process.as_secs() / 60, time_to_process.as_secs() % 60);
-
-                            let result_size = result_path
-                                .metadata()
-                                .expect("Failed to read metadata for result file")
-                                .len()
-                            ;
-
-                            match fs::copy(&result_path, &output_path) {
-                                Ok(bytes_copied) => {
-                                    if bytes_copied == result_size {
-                                        info!("MKV file '{file_name}' processed successfully!");
-                                    }
-                                    else {
-                                        error!("The file copied to output dir didn't match the intermediate file's size.");
-                                        clean_exit = false;
-    
-                                        break;
-                                    }
-                                },
-                                Err(e) => {
-                                    error!("Failed to copy result file file for {file_name} to output dir: {e}");
-                                    clean_exit = false;
-
-                                    break;
-                                }
-                            }
-
-                            if let Err(e) = fs::remove_file(&result_path) {
-                                error!("Failed to remove intermediate file for {file_name}: {e}");
-                                clean_exit = false;
-
-                                break;
-                            }
-                            else {
-                                info!("Intermediate file for {file_name} removed successfully!");
-                            }
-                        }
-                        else {
-                            info!("ffmpeg exited successfully.");
-                            info!("Time to process: {}m{}s", time_to_process.as_secs() / 60, time_to_process.as_secs() % 60);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to launch ffmpeg or something: {e}");
-                        clean_exit = false;
-                
-                        break;
-                    },
-                }
-
-                trace!("------");
-                println!();
-            }
-        }
-    }
-
-    if !clean_exit {
+    if cruncher.start_cruncher().is_err() {
         error!("Exiting because of an error...");
 
-        if !args.dry_run() {
-            if let Some(intermediate) = args.intermediate_dir() {
-                for entry in WalkDir::new(intermediate).max_depth(1).into_iter().filter_map(| f | f.ok()) {
-                    let file_name = entry.file_name().to_string_lossy().to_string();
-    
-                    if entry.file_type().is_file() && file_name.to_lowercase().contains("mkv") {
-                        fs::remove_file(entry.path()).expect("Failed to remove intermediate file");
-                    }
+        if let Some(intermediate) = args.intermediate_dir() {
+            for entry in WalkDir::new(intermediate).max_depth(1).into_iter().filter_map(| f | f.ok()) {
+                let file_name = entry.file_name().to_string_lossy().to_string();
+
+                if entry.file_type().is_file() && file_name.to_lowercase().contains("mkv") {
+                    fs::remove_file(entry.path()).expect("Failed to remove intermediate file");
                 }
             }
         }
@@ -317,22 +297,6 @@ fn configure_log() -> LoggerHandle {
         .format_for_files(flexi_logger::detailed_format)
         .start()
         .expect("Failed to start Logger")
-}
-
-fn prepare_paths(args: &args::AppArgs) {
-    if !args.input_dir().exists() {
-        panic!("Input path doesn't exist!");
-    }
-
-    if !args.output_dir().exists() {
-        fs::create_dir_all(args.output_dir()).expect("Output directory didn't exist, and couldn't be created!");
-    }
-
-    if let Some(intermediate) = args.intermediate_dir() {
-        if !intermediate.exists() {
-            fs::create_dir_all(intermediate).expect("Intermediate directory didn't exist, and couldn't be created!");
-        }
-    }
 }
 
 fn analyze_video(mkv: &MkvFile) -> bool {
@@ -518,7 +482,7 @@ fn analyze_attachments(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         .filter(| (_, a) | {
             let name = a.stream_title().to_lowercase();
             // Preserve fonts and files without extensions.
-            name.contains("ttf") || name.contains("otf") || !name.contains(".")
+            name.contains("ttf") || name.contains("otf") || !name.contains('.')
         })
         .collect()
     ;

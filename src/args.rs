@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use crate::TranscodeMode;
+
 #[derive(Parser, Debug)]
 #[clap(author, about)]
 pub struct AppArgs {
@@ -24,20 +26,6 @@ pub struct AppArgs {
     intermediate_dir: Option<PathBuf>,
 
     #[clap(
-        short = 'd',
-        long,
-        help="Analyze the MKV files on the input directory, but skip processing them."
-    )]
-    dry_run: bool,
-
-    #[clap(
-        short = 'r',
-        long,
-        help="Whether or not to go into subfolders in the Input directory."
-    )]
-    recursive: bool,
-
-    #[clap(
         long,
         help="Never transcode the video stream of the input files."
     )]
@@ -50,31 +38,27 @@ pub struct AppArgs {
 }
 
 impl AppArgs {
-    pub fn recursive(&self) -> bool {
-        self.recursive
-    }
-    
-    pub fn dry_run(&self) -> bool {
-        self.dry_run
-    }
-
-    pub fn forced_transcode(&self) -> bool {
-        self.force_always_transcode
-    }
-
-    pub fn can_transcode_video(&self) -> bool {
-        self.force_always_transcode || !self.force_never_transcode
+    pub fn transcode_mode(&self) -> TranscodeMode {
+        if self.force_always_transcode {
+            TranscodeMode::Force
+        }
+        else if self.force_never_transcode {
+            TranscodeMode::Never
+        }
+        else {
+            TranscodeMode::Auto
+        }
     }
 
-    pub fn input_dir(&self) -> &PathBuf {
-        &self.input_dir
+    pub fn input_dir(&self) -> PathBuf {
+        self.input_dir.clone()
     }
 
-    pub fn output_dir(&self) -> &PathBuf {
-        &self.output_dir
+    pub fn output_dir(&self) -> PathBuf {
+        self.output_dir.clone()
     }
 
-    pub fn intermediate_dir(&self) -> Option<&PathBuf> {
-        self.intermediate_dir.as_ref()
+    pub fn intermediate_dir(&self) -> Option<PathBuf> {
+        self.intermediate_dir.clone()
     }
 }
