@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, Write};
 
 use log::*;
 use flexi_logger::{Logger, LoggerHandle};
+use indicatif::{ProgressBar, ProgressStyle};
 
 use clap::Parser;
 use walkdir::WalkDir;
@@ -242,6 +243,15 @@ impl Cruncher {
             let file_instant = Instant::now();
 
             if let Ok(mut handle) = ffmpeg_process.spawn() {
+                // Moving the duration down from seconds to microseconds.
+                let bar = ProgressBar::new((mkv.duration() as u64 * 1000) * 1000);
+
+                bar.set_style(
+                    ProgressStyle::with_template("Processing... {percent}% {wide_bar} ({msg} - ETA: {eta_precise})")
+                    .unwrap()
+                    .progress_chars("##-")
+                );
+
                 if let Some(mut stdin) = handle.stdin.take() {
                     std::thread::spawn(move || {
                         stdin.write_all(&file_buffer).expect("Failed to write file to stdin");
@@ -253,11 +263,20 @@ impl Cruncher {
                     let stdout_lines = stdout_reader.lines();
 
                     for line in stdout_lines.flatten() {
-                        // info!("{line}");
+                        if let Some((key, value)) = line.split_once('=') {
+                            match key {
+                                "speed" => bar.set_message(value.to_owned()),
+                                "out_time_ms" => bar.set_position(value.parse().unwrap()),
+                                _ => {}
+                            }
+                        }
                     }
                 }
 
                 handle.wait().unwrap();
+
+                let elapsed_secs = file_instant.elapsed().as_secs();
+                bar.finish_with_message(format!("Finished in {}m{}s", elapsed_secs / 60, elapsed_secs % 60));
             }
         }
 
