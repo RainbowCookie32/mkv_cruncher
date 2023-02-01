@@ -288,6 +288,7 @@ impl Cruncher {
 
                     let elapsed_secs = file_instant.elapsed().as_secs();
                     bar.finish_with_message(format!("Finished in {}m{}s", elapsed_secs / 60, elapsed_secs % 60));
+                    println!();
                 }
             }
         }
@@ -441,7 +442,7 @@ fn analyze_sub_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         }
     }
     else {
-        info!("  Keeping all subs ({stream_count})");
+        info!("  Keeping all subs ({stream_count}).");
     }
 
     preserved_streams
@@ -502,7 +503,7 @@ fn analyze_audio_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         }
     }
     else {
-        info!("  Keeping all audio tracks ({stream_count})");
+        info!("  Keeping all audio tracks ({stream_count}).");
     }
 
     preserved_streams
@@ -532,7 +533,7 @@ fn analyze_attachments(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         info!("  Keeping {preserved}/{attachment_count} attachments.");
     }
     else {
-        info!("  Keeping all attachments ({attachment_count})");
+        info!("  Keeping all attachments ({attachment_count}).");
     }
 
     preserved_attachments
