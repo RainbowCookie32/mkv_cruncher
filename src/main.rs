@@ -59,7 +59,7 @@ impl Cruncher {
         info!("Reading directory {}", input.as_os_str().to_string_lossy());
 
         let files = {
-            let mut walker = WalkDir::new(&input);
+            let mut walker = WalkDir::new(&input).max_depth(1);
             walker = walker.sort_by(| a, b | a.file_name().cmp(b.file_name()));
                 
             walker
@@ -277,8 +277,8 @@ impl Cruncher {
                     }
                 }
 
-                if let Ok(exit_status) = handle.wait() {
-                    if exit_status.success() && self.intermediate.is_some() {
+                if handle.wait().is_ok() {
+                    if self.intermediate.is_some() {
                         let mut output_path = self.output.clone();
                         output_path.push(file_name);
 
@@ -287,8 +287,12 @@ impl Cruncher {
                     }
 
                     let elapsed_secs = file_instant.elapsed().as_secs();
+                    
                     bar.finish_with_message(format!("Finished in {}m{}s", elapsed_secs / 60, elapsed_secs % 60));
-                    println!();
+                    println!("\n");
+                }
+                else if target_path.exists() {
+                    fs::remove_file(&target_path).expect("Failed to remove output file");
                 }
             }
         }
@@ -550,14 +554,15 @@ const OK_SUB_LANGS: [&str; 5] = [
     "und"
 ];
 
-const BAD_SUB_WORDS: [&str; 7] = [
+const BAD_SUB_WORDS: [&str; 8] = [
     "s&s",
     "signs",
     "songs",
     "spain",
     "closed",
     "captions",
-    "closed captions"
+    "closed captions",
+    "commentary"
 ];
 
 const LOSSLESS_AUDIO_CODECS: [&str; 4] = [
