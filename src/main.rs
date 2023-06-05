@@ -279,6 +279,16 @@ impl Cruncher {
                         output_path.push(file_name);
 
                         fs::copy(&target_path, &output_path).expect("Failed to copy processed file from intermediate dir");
+
+                        if transcode_video {
+                            let source_hash = seahash::hash(&fs::read(&target_path).unwrap_or_default());
+                            let target_hash = seahash::hash(&fs::read(&output_path).unwrap_or_default());
+
+                            if source_hash != target_hash {
+                                panic!("Hash mismatch on output file!");
+                            }
+                        }
+
                         fs::remove_file(&target_path).expect("Failed to remove processed file from intermediate dir");
                     }
 
