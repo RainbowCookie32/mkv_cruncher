@@ -335,25 +335,13 @@ fn configure_log() -> LoggerHandle {
 }
 
 fn analyze_video(mkv: &MkvFile) -> bool {
-    let track = mkv.video_streams()[0];
-    
-    let mkv_size = ByteSize::b(mkv.size());
-    let mkv_duration = (mkv.duration().floor() as u64) / 60;
-
-    // A lot of guesstimation that'll probably need further tweaking.
-    // Non-HEVC I'll likely always want to transcode.
-    if track.codec() != HEVC_CODEC {
-        true
+    // Don't transcode stuff that's too small, will probably nuke quality.
+    if ByteSize::b(mkv.size()) < ByteSize::mib(600) {
+        false
     }
-    // This is aimed at movies mostly.
-    else if mkv_duration >= 55 {
-        // Not quite convinced at size threshold here.
-        mkv_size > ByteSize::gib(5)
-    }
-    // Show episodes should fall in here.
+    // If it has some size, only transcode if it's not on the target video codec.
     else {
-        // Not quite convinced here either.
-        mkv_size > ByteSize::mib(600)
+        mkv.video_streams()[0].codec() != TARGET_CODEC
     }
 }
 
@@ -545,7 +533,7 @@ fn analyze_attachments(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
 }
 
 const ASS_CODEC: &str = "ass";
-const HEVC_CODEC: &str = "hevc";
+const TARGET_CODEC: &str = "av1";
 
 const OK_SUB_LANGS: [&str; 5] = [
     "eng",
