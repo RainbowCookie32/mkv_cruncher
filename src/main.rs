@@ -58,18 +58,16 @@ impl Cruncher {
 
         info!("Reading directory {}", input.as_os_str().to_string_lossy());
 
-        let files = {
-            let mut walker = WalkDir::new(&input).max_depth(1);
-            walker = walker.sort_by(| a, b | a.file_name().cmp(b.file_name()));
-                
-            walker
-                .into_iter()
-                .filter_map(| entry | entry.ok())
-                .filter(| entry | entry.file_type().is_file())
-                .filter(| entry | entry.file_name().to_string_lossy().contains(".mkv"))
-                .map(| entry | entry.into_path())
-                .collect::<Vec<PathBuf>>()
-        };
+        let files = WalkDir::new(&input)
+            .max_depth(1)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_map(| entry | entry.ok())
+            .filter(| entry | entry.file_type().is_file())
+            .filter(| entry | entry.file_name().to_string_lossy().contains(".mkv"))
+            .map(| entry | entry.into_path())
+            .collect::<Vec<PathBuf>>()
+        ;
 
         Cruncher {
             output,
