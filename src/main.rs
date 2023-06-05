@@ -242,14 +242,12 @@ impl Cruncher {
                 .env("SVT_LOG", "fatal")
                 .stdout(std::process::Stdio::piped());
 
-            let file_instant = Instant::now();
-
             if let Ok(mut handle) = ffmpeg_process.spawn() {
                 // Moving the duration down from seconds to microseconds.
                 let bar = ProgressBar::new((mkv.duration() as u64 * 1000) * 1000);
 
                 bar.set_style(
-                    ProgressStyle::with_template("Processing... {percent}% {wide_bar} ({msg} - ETA: {eta_precise})")
+                    ProgressStyle::with_template("Processing... {percent}% {wide_bar} ({msg} - Elapsed: {elapsed_precise})")
                     .unwrap()
                     .progress_chars("##-")
                 );
@@ -284,9 +282,7 @@ impl Cruncher {
                         fs::remove_file(&target_path).expect("Failed to remove processed file from intermediate dir");
                     }
 
-                    let elapsed_secs = file_instant.elapsed().as_secs();
-                    
-                    bar.finish_with_message(format!("Finished in {}m{}s", elapsed_secs / 60, elapsed_secs % 60));
+                    bar.finish();
                     println!("\n");
                 }
                 else if target_path.exists() {
