@@ -368,7 +368,14 @@ fn analyze_sub_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         .collect()
     ;
 
-    preserved_streams.sort_unstable_by_key(|(_, s)| s.stream_title());
+    preserved_streams.sort_unstable_by_key(|(_, s)| {
+        if s.stream_title().is_empty() {
+            s.stream_language()
+        }
+        else {
+            s.stream_title()
+        }
+    });
     preserved_streams.dedup_by_key(| (_, s) | {
         if s.stream_title().is_empty() {
             s.stream_language()
