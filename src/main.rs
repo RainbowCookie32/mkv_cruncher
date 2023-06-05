@@ -266,7 +266,7 @@ impl Cruncher {
                         if let Some((key, value)) = line.split_once('=') {
                             match key {
                                 "speed" => bar.set_message(value.to_owned()),
-                                "out_time_ms" => bar.set_position(value.parse().unwrap()),
+                                "out_time_ms" => bar.set_position(value.parse().unwrap_or_default()),
                                 _ => {}
                             }
                         }
