@@ -14,29 +14,27 @@ use indicatif::{ProgressBar, ProgressStyle};
 use clap::Parser;
 use walkdir::WalkDir;
 use bytesize::ByteSize;
-use ffprobe::mkv::{MkvFile, Stream};
 
-pub enum TranscodeMode {
-    Auto,
-    Force,
-    Never
-}
+use args::{PreloadMode, TranscodeMode};
+use ffprobe::mkv::{MkvFile, Stream};
 
 pub struct Cruncher {
     output: PathBuf,
     intermediate: Option<PathBuf>,
 
     files: Vec<PathBuf>,
+
+    preload_mode: PreloadMode,
     transcode_mode: TranscodeMode
 }
 
 impl Cruncher {
-    fn init(input: PathBuf, output: PathBuf, intermediate: Option<PathBuf>, transcode_mode: TranscodeMode) -> Cruncher {
-        if !input.exists() {
+    fn init(cfg: args::AppArgs) -> Cruncher {
+        if !cfg.input_dir().exists() {
             panic!("Input directory doesn't exist!");
         }
 
-        if let Some(intermediate) = intermediate.as_ref() {
+        if let Some(intermediate) = cfg.intermediate_dir().as_ref() {
             if !intermediate.exists() {
                 if let Err(e) = fs::create_dir_all(intermediate) {
                     panic!("Failed to create intermediate directory! {e}");
@@ -47,18 +45,18 @@ impl Cruncher {
             }
         }
 
-        if !output.exists() {
-            if let Err(e) = fs::create_dir_all(&output) {
+        if !cfg.output_dir().exists() {
+            if let Err(e) = fs::create_dir_all(&cfg.output_dir()) {
                 panic!("Failed to create output directory! {e}");
             }
             else {
-                info!("Created output directory at {}", output.to_string_lossy())
+                info!("Created output directory at {}", cfg.output_dir().to_string_lossy())
             }
         }
 
-        info!("Reading directory {}", input.as_os_str().to_string_lossy());
+        info!("Reading directory {}", cfg.input_dir().as_os_str().to_string_lossy());
 
-        let files = WalkDir::new(&input)
+        let files = WalkDir::new(&cfg.input_dir())
             .max_depth(1)
             .sort_by_file_name()
             .into_iter()
@@ -70,11 +68,12 @@ impl Cruncher {
         ;
 
         Cruncher {
-            output,
-            intermediate,
+            output: cfg.output_dir(),
+            intermediate: cfg.intermediate_dir(),
 
             files,
-            transcode_mode
+            preload_mode: cfg.preload_mode(),
+            transcode_mode: cfg.transcode_mode(),
         }
     }
 
@@ -87,10 +86,17 @@ impl Cruncher {
             info!("Processing file '{file_name}'");
 
             let mkv = ffprobe::probe_file(file)?;
+
             let transcode_video = match self.transcode_mode {
                 TranscodeMode::Auto => analyze_video(&mkv),
                 TranscodeMode::Force => true,
                 TranscodeMode::Never => false
+            };
+
+            let preload_file = match self.preload_mode {
+                PreloadMode::Auto => transcode_video,
+                PreloadMode::Force => true,
+                PreloadMode::Never => false
             };
 
             let kept_subs = analyze_sub_tracks(&mkv);
@@ -107,7 +113,9 @@ impl Cruncher {
             let mut file_buffer = Vec::new();
 
             // Avoid locking up my system by loading massive files.
-            if ByteSize::b(mkv.size()) < ByteSize::gb(4) {
+            // Also, don't load files into memory if we are not transcoding video,
+            // it usually ends up taking longer to load it up than to crunch the file.
+            if transcode_video && preload_file && ByteSize::b(mkv.size()) < ByteSize::gb(3) {
                 info!("  Loading MKV file into memory.");
 
                 match fs::read(file) {
@@ -125,7 +133,15 @@ impl Cruncher {
                 }
             }
             else {
-                info!("  MKV file is too big, reading from disk.");
+                if transcode_video && preload_file {
+                    info!("  MKV file is too big, reading from disk.");
+                }
+                else if !preload_file {
+                    info!("  Preload was disabled in configuration, reading from disk.");
+                }
+                else {
+                    info!("  Preload is disabled when video isn't transcoded, reading from disk.");
+                }
 
                 ffmpeg_arguments.push(String::from("-i"));
                 ffmpeg_arguments.push(file.to_str().unwrap_or_default().to_owned());
@@ -316,12 +332,13 @@ fn main() {
 
     info!("Starting cruncher...\n");
 
-    let mut cruncher = Cruncher::init(args.input_dir(), args.output_dir(), args.intermediate_dir(), args.transcode_mode());
+    let intermediate = args.intermediate_dir().clone();
+    let mut cruncher = Cruncher::init(args);
 
     if cruncher.start_cruncher().is_err() {
         error!("Exiting because of an error...");
 
-        if let Some(intermediate) = args.intermediate_dir() {
+        if let Some(intermediate) = intermediate {
             for entry in WalkDir::new(intermediate).max_depth(1).into_iter().filter_map(| f | f.ok()) {
                 let file_name = entry.file_name().to_string_lossy().to_string();
 

@@ -1,8 +1,20 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
-use crate::TranscodeMode;
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum PreloadMode {
+    Auto,
+    Force,
+    Never
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum TranscodeMode {
+    Auto,
+    Force,
+    Never
+}
 
 #[derive(Parser, Debug)]
 #[clap(author, about)]
@@ -24,29 +36,38 @@ pub struct AppArgs {
         help="A directory for ffmpeg to write the output files to, which are then moved by the cruncher to output_dir."
     )]
     intermediate_dir: Option<PathBuf>,
-
     #[clap(
+        arg_enum,
+        value_parser,
         long,
-        help="Never transcode the video stream of the input files."
+        help="Whether to force preload of mkv files into memory, read them from disk, or let mkv_cruncher decide."
     )]
-    force_never_transcode: bool,
+    preload_mode: Option<PreloadMode>,
     #[clap(
+        arg_enum,
+        value_parser,
         long,
-        help="Always transcode the video stream of the input files."
+        help="Whether to force transcode of video streams, copy them, or let mkv_cruncher decide."
     )]
-    force_always_transcode: bool
+    transcode_mode: Option<TranscodeMode>
 }
 
 impl AppArgs {
-    pub fn transcode_mode(&self) -> TranscodeMode {
-        if self.force_always_transcode {
-            TranscodeMode::Force
-        }
-        else if self.force_never_transcode {
-            TranscodeMode::Never
+    pub fn preload_mode(&self) -> PreloadMode {
+        if let Some(mode) = self.preload_mode.clone() {
+            mode
         }
         else {
-            TranscodeMode::Auto
+            PreloadMode::Auto
+        }
+    }
+
+    pub fn transcode_mode(&self) -> TranscodeMode {
+        if let Some(mode) = self.transcode_mode {
+            mode
+        }
+        else {
+             TranscodeMode::Auto
         }
     }
 
