@@ -15,7 +15,6 @@ struct FFProbeResult {
 
 #[derive(Deserialize)]
 struct FFProbeStream {
-    index: u64,
     #[serde(default)]
     codec_name: String,
     codec_type: String,
@@ -23,15 +22,8 @@ struct FFProbeStream {
     #[serde(default)]
     channels: u64,
 
-    disposition: FFProbeStreamDisposition,
     #[serde(default)]
     tags: FFProbeStreamTags
-}
-
-#[derive(Deserialize)]
-struct FFProbeStreamDisposition {
-    default: u8,
-    forced: u8
 }
 
 #[derive(Deserialize, Default)]
@@ -45,11 +37,8 @@ struct FFProbeStreamTags {
 
 #[derive(Deserialize)]
 struct FFProbeFormat {
-    filename: String,
-    nb_streams: u64,
     duration: String,
     size: String,
-    bit_rate: String
 }
 
 pub fn probe_file(path: &Path) -> Result<mkv::MkvFile, ProbeError> {

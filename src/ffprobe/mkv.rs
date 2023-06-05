@@ -73,9 +73,6 @@ impl MkvFile {
 pub struct Stream {
     codec: String,
     codec_type: CodecType,
-
-    default: bool,
-    forced: bool
 }
 
 impl Stream {
@@ -97,26 +94,16 @@ impl Stream {
             }
         };
 
-        let default = probe.disposition.default == 1;
-        let forced = probe.disposition.forced == 1;
-
         Ok(
             Stream {
                 codec: probe.codec_name,
                 codec_type,
-
-                default,
-                forced
             }
         )
     }
 
     pub fn codec(&self) -> &str {
         self.codec.as_str()
-    }
-
-    pub fn codec_type(&self) -> &CodecType {
-        &self.codec_type
     }
 
     pub fn channels(&self) -> u64 {
