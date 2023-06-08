@@ -40,35 +40,27 @@ pub struct AppArgs {
         arg_enum,
         value_parser,
         long,
+        default_value_t = PreloadMode::Auto,
         help="Whether to force preload of mkv files into memory, read them from disk, or let mkv_cruncher decide."
     )]
-    preload_mode: Option<PreloadMode>,
+    preload_mode: PreloadMode,
     #[clap(
         arg_enum,
         value_parser,
         long,
+        default_value_t = TranscodeMode::Auto,
         help="Whether to force transcode of video streams, copy them, or let mkv_cruncher decide."
     )]
-    transcode_mode: Option<TranscodeMode>
+    transcode_mode: TranscodeMode
 }
 
 impl AppArgs {
     pub fn preload_mode(&self) -> PreloadMode {
-        if let Some(mode) = self.preload_mode.clone() {
-            mode
-        }
-        else {
-            PreloadMode::Auto
-        }
+        self.preload_mode
     }
 
     pub fn transcode_mode(&self) -> TranscodeMode {
-        if let Some(mode) = self.transcode_mode {
-            mode
-        }
-        else {
-             TranscodeMode::Auto
-        }
+        self.transcode_mode
     }
 
     pub fn input_dir(&self) -> PathBuf {
