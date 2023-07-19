@@ -553,7 +553,7 @@ fn analyze_attachments(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
         .filter(| (_, a) | {
             let name = a.stream_title().to_lowercase();
             // Preserve fonts and files without extensions.
-            name.contains("ttf") || name.contains("otf") || !name.contains('.')
+            name.contains("ttf") || name.contains("ttc") || name.contains("otf") || !name.contains('.')
         })
         .collect()
     ;
