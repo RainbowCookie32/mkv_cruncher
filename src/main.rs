@@ -376,6 +376,13 @@ fn analyze_sub_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
     let all_streams = mkv.subtitles_streams();
     let stream_count = all_streams.len();
 
+    if stream_count == 1 {
+        return all_streams
+            .into_iter()
+            .enumerate()
+            .collect()
+    }
+
     let mut preserved_streams: Vec<(usize, &Stream)> = all_streams
         .into_iter()
         .enumerate()
@@ -471,6 +478,13 @@ fn analyze_sub_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
 fn analyze_audio_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
     let all_streams = mkv.audio_streams();
     let stream_count = all_streams.len();
+
+    if stream_count == 1 {
+        return all_streams
+            .into_iter()
+            .enumerate()
+            .collect()
+    }
 
     let mut preserved_streams: Vec<(usize, &Stream)> = all_streams
         .into_iter()
