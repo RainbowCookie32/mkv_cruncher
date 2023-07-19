@@ -93,12 +93,6 @@ impl Cruncher {
                 TranscodeMode::Never => false
             };
 
-            let preload_file = match self.preload_mode {
-                PreloadMode::Auto => transcode_video,
-                PreloadMode::Force => true,
-                PreloadMode::Never => false
-            };
-
             let kept_subs = analyze_sub_tracks(&mkv);
             let kept_audio = analyze_audio_tracks(&mkv);
             let kept_attachments = analyze_attachments(&mkv);
@@ -112,39 +106,58 @@ impl Cruncher {
 
             let mut file_buffer = Vec::new();
 
-            // Avoid locking up my system by loading massive files.
-            // Also, don't load files into memory if we are not transcoding video,
-            // it usually ends up taking longer to load it up than to crunch the file.
-            if transcode_video && preload_file && ByteSize::b(mkv.size()) < ByteSize::gb(3) {
-                info!("  Loading MKV file into memory.");
-
+            let preload_fn = | ffmpeg_arguments: &mut Vec<String> | -> Vec<u8> {
                 match fs::read(file) {
                     Ok(buf) => {
                         info!("  File loaded successfully, launching ffmpeg.");
 
-                        file_buffer = buf;
                         ffmpeg_arguments.push(String::from("-i"));
                         ffmpeg_arguments.push(String::from("pipe:0"));
+
+                        buf
                     }
                     Err(e) => {
                         info!("  Failed to load MKV file into memory: {e}");
                         info!("  Falling back to reading from disk.");
+
+                        Vec::new()
                     }
                 }
-            }
-            else {
-                if transcode_video && preload_file {
-                    info!("  MKV file is too big, reading from disk.");
-                }
-                else if !preload_file {
-                    info!("  Preload was disabled in configuration, reading from disk.");
-                }
-                else {
-                    info!("  Preload is disabled when video isn't transcoded, reading from disk.");
-                }
+            };
 
+            let no_preload_fn = | ffmpeg_arguments: &mut Vec<String> | {
                 ffmpeg_arguments.push(String::from("-i"));
                 ffmpeg_arguments.push(file.to_str().unwrap_or_default().to_owned());
+            };
+
+            // Avoid locking up my system by loading massive files.
+            // Also, don't load files into memory if we are not transcoding video,
+            // it usually ends up taking longer to load it up than to crunch the file.
+            match self.preload_mode {
+                PreloadMode::Auto => {
+                    if transcode_video {
+                        if ByteSize::b(mkv.size()) < ByteSize::gib(3) {
+                            info!("  Loading MKV file into memory.");
+                            file_buffer = preload_fn(&mut ffmpeg_arguments);
+                        }
+                        else {
+                            info!("  MKV file is too big, disabling preload...");
+                            no_preload_fn(&mut ffmpeg_arguments);
+                        }
+                    }
+                    else {
+                        info!("  Video track won't be transcoded, disabling preload...");
+                        no_preload_fn(&mut ffmpeg_arguments);
+                    }
+                }
+                PreloadMode::Force => {
+                    info!("  Loading MKV file into memory (forced).");
+                    file_buffer = preload_fn(&mut ffmpeg_arguments);
+                }
+                PreloadMode::Never => {
+                    info!("  Preload was force disabled, reading from disk.");
+                    no_preload_fn(&mut ffmpeg_arguments);
+                }
             }
 
             // Grab only the first video stream. Skips cover pictures and horrible fuck-ups.
