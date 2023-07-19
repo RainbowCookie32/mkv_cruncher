@@ -58,7 +58,7 @@ impl Cruncher {
 
         let files = WalkDir::new(&cfg.input_dir())
             .max_depth(1)
-            .sort_by_file_name()
+            .sort_by(|a,b| a.file_name().to_ascii_lowercase().cmp(&b.file_name().to_ascii_lowercase()))
             .into_iter()
             .filter_map(| entry | entry.ok())
             .filter(| entry | entry.file_type().is_file())
