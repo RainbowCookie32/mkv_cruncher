@@ -390,6 +390,8 @@ fn analyze_sub_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
     let stream_count = all_streams.len();
 
     if stream_count == 1 {
+        info!("  Keeping all subs ({stream_count}).");
+        
         return all_streams
             .into_iter()
             .enumerate()
@@ -493,6 +495,8 @@ fn analyze_audio_tracks(mkv: &MkvFile) -> Vec<(usize, &Stream)> {
     let stream_count = all_streams.len();
 
     if stream_count == 1 {
+        info!("  Keeping all audio tracks ({stream_count}).");
+
         return all_streams
             .into_iter()
             .enumerate()
